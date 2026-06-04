@@ -4,7 +4,7 @@
 	import * as Select from '../components/ui/select/index';
 	import { Input } from '../components/ui/input/index';
 	import { Checkbox } from '../components/ui/checkbox/index';
-
+	import type { FormValue } from '../types';
 	let {
 		schema,
 		value,
@@ -13,17 +13,13 @@
 		path
 	}: {
 		schema: z.ZodType;
-		value: any;
-		onChange: (arg0: unknown) => void;
+		value: FormValue;
+		onChange: (arg0: FormValue) => void;
 		validationErrors: $ZodIssue[];
 		path: string[];
 	} = $props();
-	schema = schema;
-	path = path;
-	validationErrors = validationErrors;
-	onChange = onChange;
 
-	onChange(value);
+	//onChange(value);
 
 	function getOptions(schema: z.ZodType): string[] {
 		if (schema instanceof z.ZodEnum) {
@@ -48,7 +44,8 @@
 		});
 	}
 
-	const options = getOptions(schema);
+	//derive is just to fake the logic that options is dynamic, even though it stays the same from the beggining to the end
+	const options = $derived(getOptions(schema));
 
 	const errorMessages = $derived(getErrors(validationErrors, path));
 </script>
@@ -57,7 +54,7 @@
 	{#if schema instanceof z.ZodString || schema instanceof z.ZodOptional}
 		<Input
 			type="text"
-			bind:value
+			bind:value={value as string}
 			oninput={() => {
 				onChange(value);
 			}}
@@ -73,7 +70,7 @@
 		/>
 	{:else if schema instanceof z.ZodBoolean}
 		<Checkbox
-			bind:checked={value}
+			bind:checked={value as boolean | undefined}
 			onCheckedChange={() => {
 				onChange(value);
 			}}
@@ -81,7 +78,7 @@
 	{:else if schema instanceof z.ZodEnum || schema._zod.def instanceof z.ZodUnion}
 		<Select.Root
 			type="single"
-			bind:value
+			bind:value={value as string | undefined}
 			onValueChange={() => {
 				onChange(value);
 			}}

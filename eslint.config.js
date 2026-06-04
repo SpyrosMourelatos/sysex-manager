@@ -1,64 +1,61 @@
+// eslint.config.js
+import svelteConfig from './svelte.config.js';
+import { defineConfig } from 'eslint/config';
+import globals from 'globals';
 import js from '@eslint/js';
 import ts from 'typescript-eslint';
-import prettier from 'eslint-config-prettier';
 import svelte from 'eslint-plugin-svelte';
-import globals from 'globals';
-import svelteConfig from './svelte.config.js';
 
-export default ts.config(
+export default defineConfig(
+	js.configs.recommended,
+	ts.configs.recommended,
+	svelte.configs.recommended,
 	{
-		ignores: [
-			'eslint.config.js',
-			'svelte.config.js',
-			'build',
-			'.svelte-kit/',
-			'src/lib/components/ui/',
-			'src/routes/test/'
-		]
-	},
-	{
-		files: ['**/*.js', '**/*.ts', '**/*.svelte'],
-		extends: [
-			js.configs.recommended,
-			...ts.configs.strictTypeChecked,
-			...ts.configs.stylisticTypeChecked,
-			prettier
-		],
 		languageOptions: {
 			globals: {
 				...globals.browser,
-				...globals.nodeBuiltin
-			},
+				// for Sveltekit in non-SPA mode
+				...globals.node
+			}
+		}
+		// ...
+	},
+	{
+		files: ['**/*.svelte', '**/*.svelte.ts', '**/*.svelte.js'],
+		// See more details at: https://typescript-eslint.io/packages/parser/
+		languageOptions: {
 			parserOptions: {
 				projectService: true,
-				tsconfigRootDir: import.meta.dirname,
-				programs: false
+				// Enable typescript parsing for `.svelte` files.
+				extraFileExtensions: ['.svelte'],
+
+				// Specify a parser for each language, if needed:
+				// parser: {
+				//   ts: ts.parser,
+				//   typescript: ts.parser
+				//   js: espree,            // add `import espree from 'espree'`
+				// },
+				parser: ts.parser,
+
+				// explicitly importing allows for better compatibilty and functionality with rules and other tooling that depend on the config file.
+				//
+				// Note: `eslint --cache` will fail with non-serializable properties.
+				// In those cases, please remove the non-serializable properties.
+				// svelteConfig: {
+				//   ...svelteConfig,
+				//   kit: {
+				//     ...svelteConfig.kit,
+				//     typescript: undefined
+				//   }
+				// }
+				svelteConfig
 			}
 		}
 	},
 	{
-		files: ['**/*.svelte'],
-		extends: [...svelte.configs['flat/prettier'], ...svelte.configs['flat/recommended']],
-		languageOptions: {
-			parserOptions: {
-				extraFileExtensions: ['.svelte'],
-				parser: ts.parser,
-				svelteConfig
-			}
-		},
-
-		/* TODO: Re-enable this at some point when the type checking is improved.
-		 * These rules are annoying when using not well-supported TypeScript libraries
-		 * and imported SFC files are not recognised properly and needs the use of:
-		 * https://github.com/ota-meshi/typescript-eslint-parser-for-extra-files
-		 */
 		rules: {
-			'@typescript-eslint/no-unsafe-argument': 'off',
-			'@typescript-eslint/no-unsafe-assignment': 'off',
-			'@typescript-eslint/no-unsafe-call': 'off',
-			'@typescript-eslint/no-unsafe-member-access': 'off',
-			'@typescript-eslint/no-unsafe-return': 'off',
-			'@typescript-eslint/no-explicit-any': 'off'
+			// Override or add rule settings here, such as:
+			// 'svelte/rule-name': 'error'
 		}
 	}
 );

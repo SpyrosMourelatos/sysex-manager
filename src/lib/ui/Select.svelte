@@ -9,10 +9,6 @@
 	};
 
 	let { value = $bindable(), items, contentProps, placeholder, ...restProps }: Props = $props();
-	items = items;
-	contentProps = contentProps;
-	placeholder = placeholder;
-	restProps = restProps;
 
 	const selected = $derived(items.find((item) => item.value == value)?.label);
 </script>
