@@ -1,0 +1,447 @@
+<script lang="ts">
+	import { tick } from 'svelte';
+	import type { Message } from '$lib';
+	import { Command, downloadBank, getInfo, getManufacturer } from '$lib';
+	import { Orderable } from '$lib';
+	import { Button, buttonVariants } from '$lib/components/ui/button/index';
+	import * as Dialog from '$lib/components/ui/dialog/index';
+	import { Textarea } from '$lib/components/ui/textarea/index';
+	import { ScrollArea } from '$lib/components/ui/scroll-area/index';
+	import * as Table from '$lib/components/ui/table/index';
+	import Load from '$lib/icons/Load.svelte';
+	import { BankBackup, PresetBackup } from '$lib/schema';
+	import { default as MyAlert } from '$lib/ui/Alert.svelte';
+	import { AlertType, displayAlert } from '$lib/stores/alert';
+	import Icon from '@iconify/svelte';
+	import { bytesToString } from '$lib';
+
+	let selectedInput: string = $state('');
+	let selectedOutput: string = $state('');
+	let midiInputs: MIDIInput[] = $state([]);
+	let midiOutputs: MIDIOutput[] = $state([]);
+	let messages: Message[] = $state([]);
+	let outgoingMessages: Message[] = $state([]);
+	let idx: number = $state(0);
+	let sendStatus: string = $state('Send');
+	let loading: boolean = $state(false);
+
+	let pause: number = $state(0);
+	let customCmd: string = $state('');
+	let files: FileList | undefined = $state();
+
+	let file_content: ArrayBuffer;
+	let fileInput: HTMLInputElement;
+
+	let sendIndex: number = $state(0);
+
+	function handleMIDIMessage(msg: MIDIMessageEvent) {
+		if (!msg.data) {
+			return;
+		}
+
+		const device = midiInputs.find((d) => d.id == selectedInput);
+		if (!device?.manufacturer || !device.name) {
+			if (getManufacturer(msg.data) == undefined) {
+				return;
+			}
+		}
+
+		const lines = msg.data[0] == 240 ? splitSysExData(msg.data) : [msg.data];
+		lines.forEach((l, i) => {
+			messages.push(parseMessage(l, messages[i - 1]));
+			idx++;
+		});
+	}
+
+	function sendSysEx() {
+		const device = midiOutputs.find((d) => d.id == selectedOutput);
+		if (!device) {
+			displayAlert('Choose a MIDI out device to send data.');
+			return;
+		}
+		if (outgoingMessages.length == 0) {
+			displayAlert('There are no messages to send.');
+			return;
+		}
+
+		if (outgoingMessages[0].command != Command.UPDATE) {
+			if (outgoingMessages[0].command == Command.BANK_BACKUP && outgoingMessages.length != 65) {
+				displayAlert(
+					'Invalid message',
+					'A Bank Backup command needs to include 64 presets.',
+					AlertType.WARN
+				);
+				return;
+			}
+
+			if (
+				outgoingMessages[0].command != Command.BANK_BACKUP &&
+				outgoingMessages[0].command != Command.PRESET_BACKUP
+			) {
+				displayAlert(
+					'Invalid message',
+					'The first message needs to be a Bank or Preset Backup command.',
+					AlertType.WARN
+				);
+				return;
+			}
+
+			if (outgoingMessages[0].command == Command.PRESET_BACKUP && outgoingMessages.length < 2) {
+				displayAlert(
+					'Invalid message',
+					'A Preset Backup command should be followed by a preset.',
+					AlertType.WARN
+				);
+				return;
+			}
+		}
+
+		const strings: string[] = outgoingMessages.map((m: Message) =>
+			m.data
+				.map((v: string) => String.fromCharCode(parseInt(v, 16)))
+				.join('')
+				.slice(6, -1)
+		);
+
+		const objects = strings.map((s) => {
+			try {
+				return JSON.parse(s);
+			} catch (e) {
+				console.error(e);
+			}
+		});
+
+		let result;
+		if (strings[0].includes('BankBackup')) {
+			result = BankBackup.safeParse(objects);
+			if (result.error) {
+				displayAlert('Error', result.error.message, AlertType.ERROR);
+			}
+		} else if (strings[0].includes('PresetBackup')) {
+			result = PresetBackup.safeParse(objects);
+			if (result.error) {
+				displayAlert('Error', 'The preset has missing or invalid values', AlertType.ERROR);
+			}
+		}
+
+		sendStatus = 'Sending';
+
+		let i = 0;
+		const startTime = Date.now();
+		const minTime = Math.max(outgoingMessages.length * 200, 2000);
+		setTimeout(function run() {
+			device.send(outgoingMessages[i].raw);
+			sendIndex += 1;
+			if (i == outgoingMessages.length - 1) {
+				if (Date.now() - startTime < minTime) {
+					setTimeout(
+						() => {
+							sendStatus = 'Send';
+							sendIndex = 0;
+							return;
+						},
+						minTime - (Date.now() - startTime)
+					);
+				} else {
+					sendStatus = 'Send';
+					sendIndex = 0;
+					return;
+				}
+			}
+			i++;
+			setTimeout(run, pause);
+		}, pause);
+	}
+
+	$effect(() => {
+		midiInputs.forEach((input) => {
+			input.onmidimessage = null;
+		});
+		const device = midiInputs.find((d) => d.id == selectedInput);
+		if (device) {
+			device.onmidimessage = handleMIDIMessage;
+		}
+	});
+
+	$effect(() => {
+		const device = midiOutputs.find((d) => d.id == selectedOutput);
+		if (device) {
+			device.open().catch((error: unknown) => {
+				console.error(error);
+			});
+		}
+	});
+
+	async function loadFile(event: Event) {
+		const input = event.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file && file_content.byteLength == 0) return;
+		outgoingMessages = [];
+		loading = true;
+		await tick();
+
+		try {
+			if (file) file_content = await readFile(file);
+			const bytes = new Uint8Array(file_content);
+			if (bytes[0] != 240 || bytes[bytes.length - 1] != 247) {
+				displayAlert('Warning', 'File does not contain SysEx messages', AlertType.WARN);
+				return;
+			}
+			const lines = splitSysExData(bytes);
+			lines.forEach((l) => {
+				outgoingMessages.push(parseMessage(l, outgoingMessages[0]));
+				idx++;
+			});
+		} catch (error) {
+			console.error('Error loading file:', error);
+			loading = false;
+		} finally {
+			loading = false;
+		}
+	}
+
+	function readFile(file: File): Promise<ArrayBuffer> {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+
+			reader.onload = () => {
+				resolve(reader.result as ArrayBuffer);
+			};
+			reader.onerror = () => {
+				const reason = reader.error ?? new Error('Unknown FileReader error');
+				reject(reason instanceof Error ? reason : new Error(String(reason)));
+			};
+
+			reader.readAsArrayBuffer(file);
+		});
+	}
+
+	function splitSysExData(raw: Uint8Array) {
+		let index = 0;
+		const array: Uint8Array[] = [];
+		while (index < raw.length) {
+			const newIndex = raw.indexOf(0xf7, index) + 1;
+			const bytes: Uint8Array = raw.slice(index, newIndex);
+			array.push(bytes);
+			index = newIndex;
+		}
+		return array;
+	}
+
+	function parseMessage(raw: Uint8Array, previous: Message | undefined): Message {
+		const message = Array.from(raw).map((v) => v.toString(16).padStart(2, '0'));
+		const text = message.map((v: string) => String.fromCharCode(parseInt(v, 16))).join('');
+		idx++;
+		const [manufacturer, model] = getInfo(raw);
+		let command: Command;
+		switch (true) {
+			case !manufacturer.includes('Dreadbox P.C.'):
+				command = Command.UNKNOWN;
+				break;
+			case text.substring(8, 18) === 'BankBackup':
+				command = Command.BANK_BACKUP;
+				break;
+			case text.substring(7, 19) == 'PresetBackup':
+				command = Command.PRESET_BACKUP;
+				break;
+			case text.includes('base') && previous == undefined:
+				command = Command.PRESET;
+				break;
+			case previous == undefined:
+				command = Command.UPDATE;
+				break;
+			case previous?.command == Command.UPDATE:
+				command = Command.UPDATE;
+				break;
+			case previous?.command == Command.PRESET_BACKUP:
+				command = Command.ACTIVE;
+				break;
+			case text.includes('base'):
+				command = Command.PRESET;
+				break;
+			default:
+				command = Command.UNKNOWN;
+				break;
+		}
+		let content;
+		try {
+			content = JSON.parse(text.slice(6, -1));
+		} catch {
+			content = '';
+		}
+		return {
+			id: idx + 1000,
+			manufacturer: manufacturer,
+			model: model,
+			data: message,
+			raw: raw,
+			content: content,
+			command: command
+		};
+	}
+
+	function isSysex(s: string): boolean {
+		if (s.includes('\n')) return false;
+		if (/^f0\s.*?\sf7$/i.test(s)) {
+			return true;
+		}
+		return false;
+	}
+</script>
+
+<div
+	style="padding: calc(var(--spacing) * 8);"
+	class="grid h-[88vh] w-full grid-cols-[1fr_38.2%] grid-rows-[min-content_auto] gap-8 p-4"
+>
+	<div class="flex items-end justify-between">
+		<div class="flex items-end gap-2">
+			<div class="grid w-full max-w-sm items-center gap-1.5">
+				<label for="file">Open File</label>
+				<input
+					id="file"
+					type="file"
+					accept=".syx"
+					bind:files
+					onchange={loadFile}
+					bind:this={fileInput}
+					onclick={() => (fileInput.value = '')}
+					class="selection:bg-primary dark:bg-input/30 selection:text-primary-foreground border-input ring-offset-background placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive flex h-9 w-full min-w-0 rounded-md border bg-transparent px-3 pt-1.5 text-sm font-medium shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
+				/>
+			</div>
+			<Dialog.Root>
+				<Dialog.Trigger class={buttonVariants({ variant: 'default' })}
+					>Create Command</Dialog.Trigger
+				>
+				<Dialog.Content class="max-h-[50vh] w-[50vw]">
+					<Dialog.Header>
+						<Dialog.Title>Create Command</Dialog.Title>
+						<Dialog.Description
+							>Create custom sysex commands to send to your device.</Dialog.Description
+						>
+					</Dialog.Header>
+					<Textarea placeholder="Type your command here." bind:value={customCmd} class="h-[20vh]" />
+					<Dialog.Footer>
+						<Dialog.Close
+							type="submit"
+							disabled={!isSysex(customCmd)}
+							onclick={() => {
+								outgoingMessages.push(
+									parseMessage(
+										Uint8Array.from(customCmd.split(' ').map((v) => parseInt(v, 16))),
+										outgoingMessages[0]
+									)
+								);
+							}}
+							>Add command
+						</Dialog.Close>
+					</Dialog.Footer>
+				</Dialog.Content>
+			</Dialog.Root>
+			<Button
+				disabled={outgoingMessages.length == 0}
+				onclick={() => {
+					downloadBank(outgoingMessages);
+				}}><Icon icon="lucide:download" width="24" height="24" /></Button
+			>
+			<Button
+				onclick={() => {
+					outgoingMessages = [];
+				}}>Clear</Button
+			>
+		</div>
+		<Button
+			variant={sendStatus == 'Sending' ? 'destructive' : 'default'}
+			onclick={() => {
+				if (sendStatus == 'Send') {
+					sendSysEx();
+				}
+			}}
+		>
+			{#if sendStatus == 'Send'}
+				{sendStatus} <Icon icon="lucide:arrow-right" />
+			{:else}
+				<Load class="animate-spin" />
+				{sendStatus + ' ' + ' ' + sendIndex.toString() + '/' + outgoingMessages.length.toString()}
+			{/if}
+		</Button>
+	</div>
+	<div class="flex items-end justify-between">
+		<Button
+			onclick={() => {
+				outgoingMessages = messages;
+			}}><Icon icon="lucide:arrow-left" /> Copy Over</Button
+		>
+		<Button
+			class="hover:bg-text hover:text-background w-min"
+			onclick={() => {
+				messages = [];
+			}}>Clear</Button
+		>
+	</div>
+	<div class="border-shade view overflow-auto rounded-sm border">
+		{#if loading}
+			<div class="flex h-full w-full items-center justify-center">
+				<Icon icon="lucide:loader-circle" class="size-16 animate-spin" />
+			</div>
+		{:else}
+			<ScrollArea class="h-full">
+				<Orderable items={outgoingMessages} />
+			</ScrollArea>
+		{/if}
+	</div>
+	<div class="win border-shade view overflow-auto rounded-sm border text-wrap" id="in">
+		<ScrollArea class="h-full">
+			<Table.Root>
+				<Table.Header>
+					<Table.Row>
+						<Table.Head class="w-0">#</Table.Head>
+						<Table.Head class="w-0">Manufacturer</Table.Head>
+						<Table.Head class="w-0">Model</Table.Head>
+						<Table.Head>Content</Table.Head>
+						<Table.Head class="w-0">Length</Table.Head>
+						<Table.Head class="w-0"></Table.Head>
+					</Table.Row>
+				</Table.Header>
+				<Table.Body class="font-mono font-normal">
+					{#each messages as item, index (index)}
+						<Table.Row>
+							<Table.Cell>{index}</Table.Cell>
+							<Table.Cell>{item.manufacturer}</Table.Cell>
+							<Table.Cell>{item.model}</Table.Cell>
+							<Table.Cell class="max-w-[100px] overflow-hidden text-ellipsis whitespace-nowrap"
+								>{bytesToString(item.raw).join(' ')}
+							</Table.Cell>
+							<Table.Cell class="text-right font-mono">{item.raw.length}</Table.Cell>
+							<Table.Cell>
+								<Dialog.Root>
+									<Dialog.Trigger
+										><Button variant="outline" class="mr-2 size-8"
+											><Icon icon="lucide:inspect" /></Button
+										></Dialog.Trigger
+									>
+									<Dialog.Content class="lg:max-w-[70vw]">
+										<Dialog.Header>
+											<Dialog.Title>Inspect MIDI message</Dialog.Title>
+										</Dialog.Header>
+										<ScrollArea class="max-h-[70vh] font-mono"
+											><div class="wrap-anywhere">
+												{bytesToString(item.raw).join(' ')}
+											</div></ScrollArea
+										>
+										<Dialog.Footer>
+											<Dialog.Close>
+												<Button type="submit">Close</Button>
+											</Dialog.Close>
+										</Dialog.Footer>
+									</Dialog.Content>
+								</Dialog.Root></Table.Cell
+							>
+						</Table.Row>
+					{/each}
+				</Table.Body>
+			</Table.Root>
+		</ScrollArea>
+	</div>
+</div>
+
+<MyAlert />
