@@ -43,6 +43,7 @@
 		"eslint-plugin-markdown": "^5.1.0",
 		"eslint-plugin-prettier": "^5.4.1",
 		"eslint-plugin-svelte": "^3.0.0",
+		"gh-pages": "^6.3.0",
 		"globals": "^16.0.0",
 		"husky": "^9.1.7",
 		"lint-staged": "^16.1.2",
