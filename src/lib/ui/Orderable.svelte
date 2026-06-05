@@ -20,6 +20,7 @@
 	import * as Tooltip from '$lib/components/ui/tooltip/index';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index';
 	import Input from '$lib/components/ui/input/input.svelte';
+	import type { FormValue } from '../types';
 
 	let { items = $bindable() }: { items: Message[] } = $props();
 	let editor: boolean = $state(false);
@@ -44,7 +45,7 @@
 	let validationErrors: $ZodIssue[] = $state([]);
 	const valid: boolean = $derived(validationErrors.length != 0);
 
-	function updateChange(path: string[], value: any) {
+	function updateChange(path: string[], value: FormValue) {
 		const newData = JSON.parse(JSON.stringify(data));
 
 		let current = newData;
